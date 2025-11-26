@@ -1,0 +1,399 @@
+// OrreryGameManager.cs
+// Core prototype logic for "The Clockwork Gardener" (Unity-compatible).
+// Attach to an empty GameObject. This file implements bloom winding minigame,
+// time-crystal resource management, hazards, and a final stabilization sequence.
+// Replace placeholder hooks (UI/Audio/Animation) with your project-specific systems.
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class OrreryGameManager : MonoBehaviour
+{
+    [Header("Game Settings")]
+    public int startingCrystals = 5;
+    public float slowTimeDuration = 3f;
+    public float slowTimeScale = 0.4f;
+    public float globalTickInterval = 1f; // base time tick for blooms
+
+    [Header("Bloom Settings")]
+    public BloomDefinition[] bloomDefinitions;
+
+    [Header("Hazards")]
+    public float rustGoblinSpawnInterval = 20f;
+    public float solarFlareInterval = 35f;
+    public float solarFlareDuration = 8f;
+
+    // Runtime state
+    int timeCrystals;
+    List<Bloom> blooms = new List<Bloom>();
+    float rustGoblinTimer;
+    float solarFlareTimer;
+    bool solarFlareActive;
+
+    // Final discovery
+    bool blueprintFound = false;
+    bool stabilizationUnlocked = false;
+
+    void Start()
+    {
+        timeCrystals = startingCrystals;
+        foreach (var def in bloomDefinitions)
+            blooms.Add(new Bloom(def, this));
+        rustGoblinTimer = rustGoblinSpawnInterval;
+        solarFlareTimer = solarFlareInterval;
+        StartCoroutine(GameTickLoop());
+    }
+
+    void Update()
+    {
+        // Basic input examples (replace with proper UI/touch handling)
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            // Attempt to open the nearest bloom minigame (demo: first bloom)
+            if (blooms.Count > 0)
+                StartCoroutine(blooms[0].StartWindingMinigame());
+        }
+
+        if (Input.GetKeyDown(KeyCode.E)) // spend crystal to slow time
+        {
+            if (timeCrystals > 0)
+            {
+                SpendCrystals(1);
+                StartCoroutine(DoSlowTime());
+            }
+        }
+
+        // Debug: manually trigger blueprint discovery
+        if (Input.GetKeyDown(KeyCode.B))
+        {
+            blueprintFound = true;
+            CheckUnlockStabilization();
+            Debug.Log("Blueprint found.");
+        }
+    }
+
+    IEnumerator GameTickLoop()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(globalTickInterval);
+            // Tick all blooms
+            foreach (var b in blooms)
+                b.Tick(globalTickInterval);
+
+            // Hazards timing
+            rustGoblinTimer -= globalTickInterval;
+            if (rustGoblinTimer <= 0f)
+            {
+                rustGoblinTimer = rustGoblinSpawnInterval + UnityEngine.Random.Range(-5f, 5f);
+                SpawnRustGoblin();
+            }
+
+            solarFlareTimer -= globalTickInterval;
+            if (solarFlareTimer <= 0f)
+            {
+                solarFlareTimer = solarFlareInterval + UnityEngine.Random.Range(-10f, 10f);
+                StartCoroutine(TriggerSolarFlare());
+            }
+
+            // Check for discovery unlock
+            CheckUnlockStabilization();
+        }
+    }
+
+    void SpawnRustGoblin()
+    {
+        // Picks a random bloom and attempts to jam it
+        if (blooms.Count == 0) return;
+        var target = blooms[UnityEngine.Random.Range(0, blooms.Count)];
+        if (!target.IsJammed && !target.IsWinding)
+        {
+            target.Jam();
+            // Hook: spawn visual goblin, play sound
+            Debug.Log($"Rust Goblin jammed bloom {target.Definition.displayName}");
+        }
+    }
+
+    IEnumerator TriggerSolarFlare()
+    {
+        solarFlareActive = true;
+        // Hook: show solar flare visual
+        Debug.Log("Solar flare started: overheating systems.");
+        // Overheat increases tick rate (mechanics)
+        float originalInterval = globalTickInterval;
+        globalTickInterval = Mathf.Max(0.2f, globalTickInterval * 0.6f);
+        yield return new WaitForSeconds(solarFlareDuration);
+        globalTickInterval = originalInterval;
+        solarFlareActive = false;
+        Debug.Log("Solar flare ended.");
+    }
+
+    IEnumerator DoSlowTime()
+    {
+        Time.timeScale = slowTimeScale;
+        yield return new WaitForSecondsRealtime(slowTimeDuration);
+        Time.timeScale = 1f;
+    }
+
+    public void AddCrystals(int amount)
+    {
+        timeCrystals += amount;
+        // Hook: update UI
+        Debug.Log($"Gained {amount} crystals. Total: {timeCrystals}");
+    }
+
+    public bool SpendCrystals(int amount)
+    {
+        if (timeCrystals < amount) return false;
+        timeCrystals -= amount;
+        // Hook: update UI
+        Debug.Log($"Spent {amount} crystals. Remaining: {timeCrystals}");
+        return true;
+    }
+
+    void CheckUnlockStabilization()
+    {
+        // Simple condition: blueprint found and at least 20 crystals saved
+        if (!stabilizationUnlocked && blueprintFound && timeCrystals >= 20)
+        {
+            stabilizationUnlocked = true;
+            Debug.Log("Stabilization protocol unlocked. Final rhythm challenge available.");
+            // Hook: enable final challenge UI
+        }
+    }
+
+    // Exposed for Bloom to notify when it fails catastrophically
+    public void OnBloomFailure(Bloom b)
+    {
+        // Penalty: lose crystals, spawn more hazards, etc.
+        int loss = Mathf.Min(3, timeCrystals);
+        timeCrystals -= loss;
+        Debug.Log($"Bloom {b.Definition.displayName} failed! Lost {loss} crystals. Remaining {timeCrystals}");
+        // Optionally: escalate difficulty or spawn additional goblins
+    }
+
+    // --- Data classes & minigame logic below ---
+
+    [Serializable]
+    public class BloomDefinition
+    {
+        public string displayName = "Orrery Bloom";
+        public float maxTime = 30f; // time before it stops if not wound
+        public float baseFrequency = 1.0f; // target frequency for tuning minigame
+        public float frequencyVariance = 0.35f; // allowed variation
+        public int rewardCrystals = 2;
+    }
+
+    public class Bloom
+    {
+        public BloomDefinition Definition { get; private set; }
+        public float timeRemaining;
+        public bool IsJammed { get; private set; }
+        public bool IsWinding { get; private set; }
+
+        OrreryGameManager manager;
+
+        // Minigame state
+        float targetFrequency;
+        float tolerance;
+        float tuneDurationLimit = 6f;
+
+        // Degradation
+        int failedAttempts = 0;
+
+        public Bloom(BloomDefinition def, OrreryGameManager mgr)
+        {
+            Definition = def;
+            manager = mgr;
+            timeRemaining = def.maxTime;
+            targetFrequency = def.baseFrequency * UnityEngine.Random.Range(0.9f, 1.1f);
+            tolerance = def.frequencyVariance;
+        }
+
+        public void Tick(float delta)
+        {
+            if (IsWinding) return;
+            if (IsJammed)
+            {
+                // Jammed blooms do not count down but must be unjammed manually.
+                return;
+            }
+
+            timeRemaining -= delta;
+            if (timeRemaining <= 0f)
+                OnStop();
+        }
+
+        public void Jam()
+        {
+            IsJammed = true;
+            // Optional: visual/sound
+        }
+
+        public void Unjam()
+        {
+            IsJammed = false;
+            // Hook: reward small crystals for cleaning
+            manager.AddCrystals(1);
+            Debug.Log($"Bloom {Definition.displayName} unjammed.");
+        }
+
+        public IEnumerator StartWindingMinigame()
+        {
+            if (IsWinding || IsJammed) yield break;
+            IsWinding = true;
+            // Prepare minigame: a simple frequency-matching loop
+            float elapsed = 0f;
+            float playerFreq = 0.5f; // starting slider value
+            float freqAdjustSpeed = 0.8f; // change per second while input held
+            bool success = false;
+
+            // Hook: open UI, show target pitch visualization
+            Debug.Log($"Starting winding minigame for {Definition.displayName}. Target freq {targetFrequency:F2}Hz (±{tolerance:F2})");
+
+            while (elapsed < tuneDurationLimit)
+            {
+                elapsed += Time.deltaTime;
+
+                // Input: mouse/keyboard for prototype; replace with touch UI slider on tablets
+                if (Input.GetKey(KeyCode.RightArrow)) playerFreq += freqAdjustSpeed * Time.deltaTime;
+                if (Input.GetKey(KeyCode.LeftArrow)) playerFreq -= freqAdjustSpeed * Time.deltaTime;
+                playerFreq = Mathf.Clamp(playerFreq, 0.1f, 3.0f);
+
+                // Optional: show playerFreq on UI
+
+                // Press Enter to attempt lock-in
+                if (Input.GetKeyDown(KeyCode.Return))
+                {
+                    float diff = Mathf.Abs(playerFreq - targetFrequency);
+                    if (diff <= tolerance)
+                    {
+                        success = true;
+                    }
+                    else
+                    {
+                        success = false;
+                    }
+                    break;
+                }
+
+                yield return null;
+            }
+
+            if (!success && elapsed >= tuneDurationLimit)
+            {
+                // timeout = failure
+                success = false;
+            }
+
+            if (success)
+            {
+                OnWindingSuccess();
+            }
+            else
+            {
+                OnWindingFailure();
+            }
+
+            // Reset or randomize next target to add variety
+            targetFrequency = Definition.baseFrequency * UnityEngine.Random.Range(0.85f, 1.15f);
+            IsWinding = false;
+            yield break;
+        }
+
+        void OnWindingSuccess()
+        {
+            // Rewind bloom, give crystals, restore timeRemaining partially
+            int reward = Definition.rewardCrystals;
+            manager.AddCrystals(reward);
+            timeRemaining = Mathf.Min(Definition.maxTime, timeRemaining + Definition.maxTime * 0.6f);
+            failedAttempts = 0;
+            Debug.Log($"Winding success on {Definition.displayName}. +{reward} crystals. Time remaining reset to {timeRemaining:F1}s");
+            // Hook: play success sound/animation
+        }
+
+        void OnWindingFailure()
+        {
+            // Penalty: accelerate decay, maybe break
+            failedAttempts++;
+            timeRemaining -= Definition.maxTime * 0.25f;
+            Debug.Log($"Winding failed on {Definition.displayName}. Time remaining reduced to {timeRemaining:F1}s");
+            // If too many failures, escalate
+            if (failedAttempts >= 3)
+            {
+                // Catastrophic failure
+                manager.OnBloomFailure(this);
+                failedAttempts = 0;
+                // Reset the bloom partially
+                timeRemaining = Definition.maxTime * 0.5f;
+            }
+        }
+
+        void OnStop()
+        {
+            // Bloom stopped: major penalty
+            Debug.Log($"{Definition.displayName} stopped. Immediate consequences triggered.");
+            manager.OnBloomFailure(this);
+            // Respawn or reset
+            timeRemaining = Definition.maxTime * 0.5f;
+        }
+    }
+
+    // Optional: method to start final stabilization rhythm challenge. Should be called when unlocked.
+    public IEnumerator StartStabilizationChallenge()
+    {
+        if (!stabilizationUnlocked) yield break;
+        Debug.Log("Starting final stabilization challenge.");
+
+        // Example rhythm challenge: sequence of frequency matches with increasing difficulty
+        int sequenceLength = 6;
+        float baseTimePerStep = 4f;
+        int successes = 0;
+
+        for (int i = 0; i < sequenceLength; i++)
+        {
+            // Create a transient "boss" bloom with stricter tolerance
+            BloomDefinition bd = new BloomDefinition
+            {
+                displayName = $"Stabilizer Node {i + 1}",
+                maxTime = baseTimePerStep,
+                baseFrequency = 0.9f + i * 0.1f,
+                frequencyVariance = 0.18f,
+                rewardCrystals = 0
+            };
+            Bloom node = new Bloom(bd, this);
+            IEnumerator wind = node.StartWindingMinigame();
+            yield return StartCoroutine(wind);
+
+            // For prototype, infer success by checking node timeRemaining increased above zero threshold
+            if (node.timeRemaining > 0f)
+            {
+                successes++;
+                Debug.Log($"Node {i + 1} stabilized.");
+            }
+            else
+            {
+                Debug.Log($"Node {i + 1} failed.");
+            }
+
+            // Slight pace up
+            baseTimePerStep = Mathf.Max(1.5f, baseTimePerStep - 0.3f);
+        }
+
+        if (successes >= sequenceLength - 1)
+        {
+            Debug.Log("Stabilization complete. Orrery orbit stabilized!");
+            // Hook: trigger win state, reward plenty of crystals, endgame sequence
+            AddCrystals(30);
+        }
+        else
+        {
+            Debug.Log("Stabilization failed. Systems suffered heavy strain.");
+            // Penalty: heavy crystal loss and more hazards
+            int loss = Mathf.Min(10, timeCrystals);
+            timeCrystals -= loss;
+        }
+    }
+}
